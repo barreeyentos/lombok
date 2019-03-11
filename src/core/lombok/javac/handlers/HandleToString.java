@@ -1,16 +1,16 @@
 /*
  * Copyright (C) 2009-2018 The Project Lombok Authors.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -21,22 +21,11 @@
  */
 package lombok.javac.handlers;
 
-import static lombok.core.handlers.HandlerUtil.*;
-import static lombok.javac.handlers.JavacHandlerUtil.*;
+import static lombok.core.handlers.HandlerUtil.handleFlagUsage;
 import static lombok.javac.Javac.*;
+import static lombok.javac.handlers.JavacHandlerUtil.*;
 
 import java.util.Collection;
-
-import lombok.ConfigurationKeys;
-import lombok.ToString;
-import lombok.core.AnnotationValues;
-import lombok.core.configuration.CallSuperType;
-import lombok.core.AST.Kind;
-import lombok.core.handlers.InclusionExclusionUtils;
-import lombok.core.handlers.InclusionExclusionUtils.Included;
-import lombok.javac.JavacAnnotationHandler;
-import lombok.javac.JavacNode;
-import lombok.javac.JavacTreeMaker;
 
 import org.mangosdk.spi.ProviderFor;
 
@@ -55,12 +44,28 @@ import com.sun.tools.javac.tree.JCTree.JCStatement;
 import com.sun.tools.javac.tree.JCTree.JCTypeParameter;
 import com.sun.tools.javac.tree.JCTree.JCVariableDecl;
 import com.sun.tools.javac.util.List;
+import com.sun.tools.javac.util.Name;
+
+import lombok.ConfigurationKeys;
+import lombok.ToString;
+import lombok.core.AST.Kind;
+import lombok.core.AnnotationValues;
+import lombok.core.configuration.CallSuperType;
+import lombok.core.handlers.HandlerUtil.FieldAccess;
+import lombok.core.handlers.InclusionExclusionUtils;
+import lombok.core.handlers.InclusionExclusionUtils.Included;
+import lombok.javac.JavacAnnotationHandler;
+import lombok.javac.JavacNode;
+import lombok.javac.JavacTreeMaker;
 
 /**
  * Handles the {@code ToString} annotation for javac.
  */
-@ProviderFor(JavacAnnotationHandler.class)
-public class HandleToString extends JavacAnnotationHandler<ToString> {
+@ProviderFor(JavacAnnotationHandler.class) public class HandleToString extends JavacAnnotationHandler<ToString> {
+	private static final String LOMBOK_SENSITIVE_PROPERTY = "lombok.sensitive";
+	private static final String SHOULD_OBFUSCATE = "shouldObfuscate";
+	private static final String OBFUSCATED_VALUE = "***";
+	
 	@Override public void handle(AnnotationValues<ToString> annotation, JCAnnotation ast, JavacNode annotationNode) {
 		handleFlagUsage(annotationNode, ConfigurationKeys.TO_STRING_FLAG_USAGE, "@ToString");
 		
@@ -86,15 +91,16 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 	
 	public void generateToStringForType(JavacNode typeNode, JavacNode errorNode) {
 		if (hasAnnotation(ToString.class, typeNode)) {
-			//The annotation will make it happen, so we can skip it.
+			// The annotation will make it happen, so we can skip it.
 			return;
 		}
 		
 		boolean includeFieldNames = true;
 		try {
 			Boolean configuration = typeNode.getAst().readConfiguration(ConfigurationKeys.TO_STRING_INCLUDE_FIELD_NAMES);
-			includeFieldNames = configuration != null ? configuration : ((Boolean)ToString.class.getMethod("includeFieldNames").getDefaultValue()).booleanValue();
-		} catch (Exception ignore) {}
+			includeFieldNames = configuration != null ? configuration : ((Boolean) ToString.class.getMethod("includeFieldNames").getDefaultValue()).booleanValue();
+		} catch (Exception ignore) {
+		}
 		
 		Boolean doNotUseGettersConfiguration = typeNode.getAst().readConfiguration(ConfigurationKeys.TO_STRING_DO_NOT_USE_GETTERS);
 		FieldAccess access = doNotUseGettersConfiguration == null || !doNotUseGettersConfiguration ? FieldAccess.GETTER : FieldAccess.PREFER_FIELD;
@@ -103,8 +109,7 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 		generateToString(typeNode, errorNode, members, includeFieldNames, null, false, access);
 	}
 	
-	public void generateToString(JavacNode typeNode, JavacNode source, java.util.List<Included<JavacNode, ToString.Include>> members,
-		boolean includeFieldNames, Boolean callSuper, boolean whineIfExists, FieldAccess fieldAccess) {
+	public void generateToString(JavacNode typeNode, JavacNode source, java.util.List<Included<JavacNode, ToString.Include>> members, boolean includeFieldNames, Boolean callSuper, boolean whineIfExists, FieldAccess fieldAccess) {
 		
 		boolean notAClass = true;
 		if (typeNode.get() instanceof JCClassDecl) {
@@ -140,6 +145,7 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 					}
 				}
 			}
+
 			JCMethodDecl method = createToString(typeNode, members, includeFieldNames, callSuper, fieldAccess, source.get());
 			injectMethod(typeNode, method);
 			break;
@@ -154,8 +160,7 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 		}
 	}
 	
-	static JCMethodDecl createToString(JavacNode typeNode, Collection<Included<JavacNode, ToString.Include>> members,
-		boolean includeNames, boolean callSuper, FieldAccess fieldAccess, JCTree source) {
+	static JCMethodDecl createToString(JavacNode typeNode, Collection<Included<JavacNode, ToString.Include>> members, boolean includeNames, boolean callSuper, FieldAccess fieldAccess, JCTree source) {
 		
 		JavacTreeMaker maker = typeNode.getTreeMaker();
 		
@@ -184,21 +189,22 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 			prefix = "(";
 		}
 		
+		long finalFlag = JavacHandlerUtil.addFinalIfNeeded(0L, typeNode.getContext());
+		Name shouldObfuscateName = typeNode.toName(SHOULD_OBFUSCATE);
+		
+		JCExpression checkProperty = maker.Apply(List.<JCExpression>nil(), maker.Select(maker.Ident(typeNode.toName("Boolean")), typeNode.toName("getBoolean")), List.<JCExpression>of(maker.Literal(LOMBOK_SENSITIVE_PROPERTY)));
+		JCVariableDecl shouldObfuscateVar = maker.VarDef(maker.Modifiers(finalFlag), shouldObfuscateName, maker.TypeIdent(CTC_BOOLEAN), checkProperty);
+		
 		JCExpression current;
-		if (!isEnum) { 
+		if (!isEnum) {
 			current = maker.Literal(typeName + prefix);
 		} else {
-			current = maker.Binary(CTC_PLUS, maker.Literal(typeName + "."), maker.Apply(List.<JCExpression>nil(),
-					maker.Select(maker.Ident(typeNode.toName("this")), typeNode.toName("name")),
-					List.<JCExpression>nil()));
+			current = maker.Binary(CTC_PLUS, maker.Literal(typeName + "."), maker.Apply(List.<JCExpression>nil(), maker.Select(maker.Ident(typeNode.toName("this")), typeNode.toName("name")), List.<JCExpression>nil()));
 			if (!prefix.isEmpty()) current = maker.Binary(CTC_PLUS, current, maker.Literal(prefix));
 		}
 		
-		
 		if (callSuper) {
-			JCMethodInvocation callToSuper = maker.Apply(List.<JCExpression>nil(),
-				maker.Select(maker.Ident(typeNode.toName("super")), typeNode.toName("toString")),
-				List.<JCExpression>nil());
+			JCMethodInvocation callToSuper = maker.Apply(List.<JCExpression>nil(), maker.Select(maker.Ident(typeNode.toName("super")), typeNode.toName("toString")), List.<JCExpression>nil());
 			current = maker.Binary(CTC_PLUS, current, callToSuper);
 			first = false;
 		}
@@ -216,7 +222,8 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 			
 			JCExpression memberType = getFieldType(memberNode, fieldAccess);
 			
-			// The distinction between primitive and object will be useful if we ever add a 'hideNulls' option.
+			// The distinction between primitive and object will be useful if we ever add a
+			// 'hideNulls' option.
 			@SuppressWarnings("unused")
 			boolean fieldIsPrimitive = memberType instanceof JCPrimitiveTypeTree;
 			boolean fieldIsPrimitiveArray = memberType instanceof JCArrayTypeTree && ((JCArrayTypeTree) memberType).elemtype instanceof JCPrimitiveTypeTree;
@@ -225,7 +232,12 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 			if (fieldIsPrimitiveArray || fieldIsObjectArray) {
 				JCExpression tsMethod = chainDots(typeNode, "java", "util", "Arrays", fieldIsObjectArray ? "deepToString" : "toString");
 				expr = maker.Apply(List.<JCExpression>nil(), tsMethod, List.<JCExpression>of(memberAccessor));
-			} else expr = memberAccessor;
+			} else
+				expr = memberAccessor;
+			
+			if (member.getInc() != null && member.getInc().sensitive()) {
+				expr = maker.Parens(maker.Conditional(maker.Ident(shouldObfuscateName), maker.Literal(OBFUSCATED_VALUE), maker.Ident(shouldObfuscateName)));
+			}
 			
 			if (first) {
 				current = maker.Binary(CTC_PLUS, current, expr);
@@ -248,10 +260,9 @@ public class HandleToString extends JavacAnnotationHandler<ToString> {
 		
 		JCStatement returnStatement = maker.Return(current);
 		
-		JCBlock body = maker.Block(0, List.of(returnStatement));
+		JCBlock body = maker.Block(0, List.of(shouldObfuscateVar, returnStatement));
 		
-		return recursiveSetGeneratedBy(maker.MethodDef(mods, typeNode.toName("toString"), returnType,
-			List.<JCTypeParameter>nil(), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null), source, typeNode.getContext());
+		return recursiveSetGeneratedBy(maker.MethodDef(mods, typeNode.toName("toString"), returnType, List.<JCTypeParameter>nil(), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null), source, typeNode.getContext());
 	}
 	
 	public static String getTypeName(JavacNode typeNode) {
